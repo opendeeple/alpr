@@ -25,11 +25,17 @@ message(STATUS "Find TensorRT ONNX parser lib at ${TENSORRT_LIBRARY_ONNX_PARSER}
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-# ALPR
-add_executable(alpr alpr/main.cu)
-set_property(TARGET alpr PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
-target_link_libraries(alpr ${TENSORRT_LIBRARY})
-target_link_libraries(alpr ${OpenCV_LIBS})
+# App
+add_executable(app alpr/app.cu)
+set_property(TARGET app PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
+target_link_libraries(app ${TENSORRT_LIBRARY})
+target_link_libraries(app ${OpenCV_LIBS})
+
+# Strea
+add_executable(stream alpr/stream.cu)
+set_property(TARGET stream PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
+target_link_libraries(stream ${TENSORRT_LIBRARY})
+target_link_libraries(stream ${OpenCV_LIBS})
 
 # VideoCapture
 add_executable(vid alpr/vid.cc)

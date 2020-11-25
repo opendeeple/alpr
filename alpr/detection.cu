@@ -140,28 +140,31 @@ bool alpr::Detection::infer(cv::Mat &image, float threshold, std::pair<alpr::det
         std::cerr << "[Detection] Expect at least one input and one output for network" << std::endl;
         return false;
     }
-    cv::cuda::GpuMat gpu_image;
-    gpu_image.upload(image);
-    this->preprocessing(gpu_image, (float *) buffers[0], input_dims[0]);
-    gpu_image.release();
-    this->context->enqueue(this->params.batch_size, buffers.data(), 0, nullptr);
-    std::vector<alpr::detection::Label> labels = this->filter_detection(cv::Size(input_dims[0].d[2], input_dims[0].d[1]), (float *) buffers[1], 
-        output_dims[0], threshold, this->params.batch_size);
-    for (void* buffer : buffers) cudaFree(buffer);
-    std::vector<alpr::detection::Label> selections = alpr::nms(labels, threshold);
-    
-    if(selections.size() == 0) return false;
+    try{
+        cv::cuda::GpuMat gpu_image;
+        gpu_image.upload(image);
+        this->preprocessing(gpu_image, (float *) buffers[0], input_dims[0]);
+        gpu_image.release();
+        this->context->enqueue(this->params.batch_size, buffers.data(), 0, nullptr);
+        std::vector<alpr::detection::Label> labels = this->filter_detection(cv::Size(input_dims[0].d[2], input_dims[0].d[1]), (float *) buffers[1], 
+            output_dims[0], threshold, this->params.batch_size);
+        for (void* buffer : buffers) cudaFree(buffer);
+        std::vector<alpr::detection::Label> selections = alpr::nms(labels, threshold);
+        if(selections.size() == 0) return false;
 
-    alpr::detection::Label result = selections.at(0);
+        alpr::detection::Label result = selections.at(0);
 
-    cv::Size size = image.size();
-    result.points.row(0) *= size.height;
-    result.points.row(1) *= size.width;
+        cv::Size size = image.size();
+        result.points.row(0) *= size.height;
+        result.points.row(1) *= size.width;
 
-    output->first  = result;
-    output->second = this->extract_plate(image, result.points.clone(), cv::Size(240, 80));
+        output->first  = result;
+        output->second = this->extract_plate(image, result.points.clone(), cv::Size(240, 80));
 
-    return true;
+        return true;
+    } catch(cv::Exception &e) {
+        return false;
+    }
 };
 
 void alpr::Detection::preprocessing(cv::cuda::GpuMat image, float* input_buffer, const nvinfer1::Dims& dims) {

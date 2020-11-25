@@ -26,6 +26,27 @@ namespace alpr {
         };
     };
 
+    cv::Mat merge_frames(int width, int height, std::vector<cv::Mat> frames) {
+        int len = frames.size();
+        int cols = sqrt(frames.size());
+        int rows = floor(frames.size() / cols);
+        cv::Mat win(cv::Size(width, height), CV_8UC3);
+        int index = 0;
+        for(int row = 0; row < rows; row++) {
+            for(int col = 0; col < cols; col++) {
+                int w = int(width / rows), h = int(height / cols);
+                if(index < frames.size() && !frames.at(index).empty()) {
+                    cv::Mat frame = frames.at(index).clone();
+                    cv::resize(frame, frame, cv::Size(w, h));
+                    int x = row * w, y = col * h;
+                    frame.copyTo(win(cv::Rect(x, y, w, h)));
+                }
+                index++;
+            }
+        }
+        return win;
+    }
+
     size_t get_size_by_dim(const nvinfer1::Dims& dims);
     cv::Mat find_transform_matrix(cv::Mat matrix, cv::Mat transpose_matrix);
     std::vector<detection::Label> nms(std::vector<detection::Label> labels, float threshold);
