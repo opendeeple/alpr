@@ -16,6 +16,7 @@
 #include "NvInfer.h"
 #include "NvUffParser.h"
 #include "alpr_api.cc"
+#include "buffer.cu"
 
 using Severity = nvinfer1::ILogger::Severity;
 
@@ -29,7 +30,7 @@ struct TRTDestroy {
     template<typename T>
     void operator()(T* object) const {
         if(object) object->destroy();
-    };
+    }
 };
 
 template<typename T> using unique_ptr = std::unique_ptr<T, TRTDestroy>;
@@ -46,7 +47,7 @@ namespace alpr {
             unique_ptr<nvinfer1::IBuilderConfig>& config,
             unique_ptr<nvuffparser::IUffParser>& parser
         );
-        void preprocessing(cv::cuda::GpuMat image, float* input_buffer, const nvinfer1::Dims& dims);
+        bool preprocessing(cv::Mat image, BufferManager &buffer, const nvinfer1::Dims& dims);
         std::vector<alpr::detection::Label> filter_detection(cv::Size size, float* output_buffer, 
             const nvinfer1::Dims& dims, float threshold, const int batch_size);
         cv::Mat extract_plate(cv::Mat image, cv::Mat points, cv::Size size);
@@ -61,7 +62,43 @@ alpr::Detection::Detection(alpr::detection::Params params) {
     this->params = params;
 };
 
+struct InferDeleter
+{
+    template <typename T>
+    void operator()(T* obj) const
+    {
+        if (obj)
+        {
+            obj->destroy();
+        }
+    }
+};
+
 bool alpr::Detection::build(){
+    {
+        std::vector<char> trtModelStream;
+        size_t size{0};
+        std::ifstream file("detection.engine", std::ios::binary);
+        if (file.good()) {
+            file.seekg(0, file.end);
+            size = file.tellg();
+            file.seekg(0, file.beg);
+            trtModelStream.resize(size);
+            file.read(trtModelStream.data(), size);
+            file.close();
+        }
+        nvinfer1::IRuntime* infer = nvinfer1::createInferRuntime(gLogger);
+        this->engine = std::shared_ptr<nvinfer1::ICudaEngine>(
+            infer->deserializeCudaEngine(trtModelStream.data(), size, nullptr), InferDeleter());
+        if(this->engine) {
+            this->context = unique_ptr<nvinfer1::IExecutionContext>(this->engine->createExecutionContext());
+            if(!this->context) {
+                std::cerr << "[Detection] Could not create engine context" << std::endl;
+                return false;
+            }
+            return true;
+        }
+    }
     auto builder = unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(gLogger));
     if(!builder) {
         std::cerr << "[Detection] Could not create a builder" << std::endl;
@@ -109,14 +146,13 @@ bool alpr::Detection::build_engine(
         return false;
     }
 
-    std::fstream file("detection.engine", std::ios::in | std::ios::out | std::ios::binary | std::ios::trunc);
-    if(file.is_open()) {
-        // TODO: restore the engine
-        file.close();
-    }
-    else {
-        std::cout << "[Detection] Could not store engine" << std::endl;
-    }
+    std::ofstream __file("detection.engine", std::ios::binary);
+    if(!__file) return false;
+    nvinfer1::IHostMemory* memory = this->engine->serialize(); assert(memory);
+    __file.write(reinterpret_cast<const char*>(memory->data()), memory->size());
+    memory->destroy();
+    __file.close();
+    std::cout << "Engine has restored" << std::endl;
 
     this->context = unique_ptr<nvinfer1::IExecutionContext>(this->engine->createExecutionContext());
     if(!this->context) {
@@ -126,13 +162,24 @@ bool alpr::Detection::build_engine(
     return true;
 };
 
+bool alpr::Detection::preprocessing(cv::Mat image, BufferManager &buffers, const nvinfer1::Dims& dims) {
+    cv::resize(image, image, cv::Size(dims.d[2], dims.d[1]), cv::INTER_CUBIC);
+    float* buffer = static_cast<float*>(buffers.getHostBuffer(this->params.input_tensor));
+    for(int i = 0, volume_image = dims.d[0] * dims.d[1] * dims.d[2]; i < this->params.batch_size; ++i) {
+        for (unsigned j = 0, volume_c = dims.d[1] * dims.d[2]; j < volume_c; ++j) {
+            buffer[i * volume_image + 0 * volume_c + j] = float(image.data[j * dims.d[0] + 2 - 0]) / 255.0;
+            buffer[i * volume_image + 1 * volume_c + j] = float(image.data[j * dims.d[0] + 2 - 1]) / 255.0;
+            buffer[i * volume_image + 2 * volume_c + j] = float(image.data[j * dims.d[0] + 2 - 2]) / 255.0;
+        }
+    }
+    return true;
+}
+
 bool alpr::Detection::infer(cv::Mat &image, float threshold, std::pair<alpr::detection::Label, cv::Mat>* output) {
-    std::vector<void*> buffers(this->engine->getNbBindings());
+    BufferManager buffers(this->engine, this->params.batch_size);
     std::vector<nvinfer1::Dims> input_dims;
     std::vector<nvinfer1::Dims> output_dims;
     for (size_t i = 0; i < this->engine->getNbBindings(); ++i) {
-        auto binding_size = alpr::get_size_by_dim(engine->getBindingDimensions(i)) * this->params.batch_size * sizeof(float);
-        cudaMalloc(&buffers[i], binding_size);
         if(engine->bindingIsInput(i)) input_dims.emplace_back(engine->getBindingDimensions(i));
         else output_dims.emplace_back(engine->getBindingDimensions(i));
     }
@@ -140,50 +187,34 @@ bool alpr::Detection::infer(cv::Mat &image, float threshold, std::pair<alpr::det
         std::cerr << "[Detection] Expect at least one input and one output for network" << std::endl;
         return false;
     }
-    try{
-        cv::cuda::GpuMat gpu_image;
-        gpu_image.upload(image);
-        this->preprocessing(gpu_image, (float *) buffers[0], input_dims[0]);
-        gpu_image.release();
-        this->context->enqueue(this->params.batch_size, buffers.data(), 0, nullptr);
-        std::vector<alpr::detection::Label> labels = this->filter_detection(cv::Size(input_dims[0].d[2], input_dims[0].d[1]), (float *) buffers[1], 
-            output_dims[0], threshold, this->params.batch_size);
-        for (void* buffer : buffers) cudaFree(buffer);
-        std::vector<alpr::detection::Label> selections = alpr::nms(labels, threshold);
-        if(selections.size() == 0) return false;
-
-        alpr::detection::Label result = selections.at(0);
-
-        cv::Size size = image.size();
-        result.points.row(0) *= size.height;
-        result.points.row(1) *= size.width;
-
-        output->first  = result;
-        output->second = this->extract_plate(image, result.points.clone(), cv::Size(240, 80));
-
-        return true;
-    } catch(cv::Exception &e) {
+    if(!this->preprocessing(image, buffers, input_dims[0])) {
         return false;
     }
-};
-
-void alpr::Detection::preprocessing(cv::cuda::GpuMat image, float* input_buffer, const nvinfer1::Dims& dims) {
-    cv::cuda::GpuMat resized;
-    cv::cuda::resize(image, resized, cv::Size(dims.d[2], dims.d[1]), 0, 0, cv::INTER_NEAREST);
-    cv::cuda::GpuMat scaled_image;
-    resized.convertTo(scaled_image, CV_32F, 1.f / 255);
-    std::vector<cv::cuda::GpuMat> chw;
-    for (size_t i = 0; i < dims.d[0]; ++i) {
-        chw.emplace_back(cv::cuda::GpuMat(cv::Size(dims.d[2], dims.d[1]), CV_32FC1, input_buffer + i * dims.d[2] * dims.d[1]));
+    buffers.copyInputToDevice();
+    bool status = this->context->enqueue(this->params.batch_size, buffers.getDeviceBindings().data(), 0, nullptr);
+    if(!status) {
+        std::cout << "Model is not infered successfully" << std::endl;
     }
-    cv::cuda::split(scaled_image, chw);
+    buffers.copyOutputToHost();
+    float* output_buffer = static_cast<float*>(buffers.getHostBuffer(this->params.output_tensor));
+    std::vector<alpr::detection::Label> labels = this->filter_detection(cv::Size(input_dims[0].d[2], input_dims[0].d[1]), output_buffer, 
+            output_dims[0], threshold, this->params.batch_size);
+    std::vector<alpr::detection::Label> selections = alpr::nms(labels, threshold);
+    if(selections.size() == 0) return false;
+
+    alpr::detection::Label result = selections.at(0);
+    cv::Size size = image.size();
+    result.points.row(0) *= size.height;
+    result.points.row(1) *= size.width;
+    output->first  = result;
+    output->second = this->extract_plate(image, result.points.clone(), cv::Size(240, 80));
+    return true;
 };
 
 std::vector<alpr::detection::Label> alpr::Detection::filter_detection(cv::Size size, float* output_buffer, 
     const nvinfer1::Dims& dims, float threshold, const int batch_size) {
     float side = 7.75;
-    std::vector<float> cpu_output(alpr::get_size_by_dim(dims) * batch_size);
-    cudaMemcpy(cpu_output.data(), output_buffer, cpu_output.size() * sizeof(float), cudaMemcpyDeviceToHost);
+    std::vector<float> cpu_output(output_buffer, output_buffer + alpr::get_size_by_dim(dims) * batch_size);
     cv::Mat transpose_matrix = (cv::Mat_<float>(3, 4) << -0.5, 0.5, 0.5, -0.5, -0.5, -0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0);
     std::vector<alpr::detection::Label> labels;
     size_t index = 0;
@@ -225,6 +256,7 @@ cv::Mat alpr::Detection::extract_plate(cv::Mat image, cv::Mat points, cv::Size o
         1.0, 1.0, 1.0, 1.0
     );
     cv::Mat affine = cv::Mat::zeros(8, 9, points.type());
+    
     for(size_t i = 0; i < 4; i++) {
         cv::Mat x = matrix.col(i).t();
         cv::Mat transpose = transpose_matrix.col(i);
