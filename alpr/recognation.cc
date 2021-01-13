@@ -1,8 +1,44 @@
 #pragma once
 #include <string>
+#include <map>
 #include <opencv2/opencv.hpp>
 #include "alpr_api.cc"
-
+char to_num(char sym) {
+    std::map<char, char> mp = {
+        {'D', '0'},
+        {'U', '0'},
+        {'O', '0'},
+        {'Q', '0'},
+        {'G', '0'},
+        {'C', '0'},
+        {'I', '1'},
+        {'J', '1'},
+        {'L', '1'},
+        {'Z', '2'},
+        {'S', '5'},
+        {'E', '6'},
+        {'B', '6'},
+        {'Y', '7'},
+        {'B', '8'}
+    };
+    std::map<char, char>::iterator it = mp.find(sym);
+    if(it == mp.end()) {
+        return sym;
+    }
+    return it->second;
+}
+char to_sym(char sym) {
+    std::map<char, char> mp = {
+        {'0', 'O'},
+        {'1', 'I'},
+        {'2', 'Z'}
+    };
+    std::map<char, char>::iterator it = mp.find(sym);
+    if(it == mp.end()) {
+        return sym;
+    }
+    return it->second;
+}
 namespace alpr {
     class Recognation {
     private:
@@ -59,6 +95,24 @@ std::string alpr::Recognation::filter_recognation(cv::Mat prediction) {
     std::string result = "";
     for(std::vector<alpr::detection::Label>::iterator it = selections.begin(); it != selections.end(); it++){
         result += alpr::sysmbols[(*it).value];
+    }
+    if(result.size() >= 1) {
+        result[1] = to_num(result[1]);
+    }
+    if(result.size() >= 2) {
+        result[1] = to_num(result[1]);
+    }
+    if(result.size() >= 4) {
+        result[3] = to_num(result[3]);
+    }
+    if(result.size() >= 5) {
+        result[4] = to_num(result[4]);
+    }
+    if(result.size() >= 7) {
+        result[6] = to_sym(result[6]);
+    }
+    if(result.size() >= 8) {
+        result[7] = to_sym(result[7]);
     }
     return result;
 }

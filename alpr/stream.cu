@@ -16,7 +16,7 @@ int main() {
 
     alpr::Recognation recognation("recognation.cfg", "recognation.weights");
 
-    std::vector<std::string> sources = {"in.avi", "out.avi"};
+    std::vector<std::string> sources = {"in.avi"};
     alpr::Camera camera(sources);
     bool init = true;
     while(cv::waitKey(20) != 27) {

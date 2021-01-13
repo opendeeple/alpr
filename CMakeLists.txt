@@ -6,7 +6,7 @@ enable_language(CUDA)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS "-Wno-deprecated-declarations ${CMAKE_CXX_FLAGS} -DBUILD_SYSTEM=cmake_oss")
+# set(CMAKE_CXX_FLAGS "-Wno-deprecated-declarations ${CMAKE_CXX_FLAGS} -DBUILD_SYSTEM=cmake_oss")
 
 # TensorRT
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS ${TENSORRT_ROOT} ${CUDA_TOOLKIT_ROOT_DIR} PATH_SUFFIXES include)
@@ -31,15 +31,24 @@ set_property(TARGET app PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
 target_link_libraries(app ${TENSORRT_LIBRARY})
 target_link_libraries(app ${OpenCV_LIBS})
 
+# App
+add_executable(run alpr/run.cu)
+set_property(TARGET run PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
+target_link_libraries(run ${TENSORRT_LIBRARY})
+target_link_libraries(run ${OpenCV_LIBS})
+
+# Image
+add_executable(image alpr/image.cu)
+set_property(TARGET image PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
+target_link_libraries(image ${TENSORRT_LIBRARY})
+target_link_libraries(image ${OpenCV_LIBS})
+
 # Strea
 add_executable(stream alpr/stream.cu)
 set_property(TARGET stream PROPERTY CUDA_ARCHITECTURES 35 50 61 72)
 target_link_libraries(stream ${TENSORRT_LIBRARY})
 target_link_libraries(stream ${OpenCV_LIBS})
 
-# VideoCapture
-add_executable(vid alpr/vid.cc)
-target_link_libraries(vid ${OpenCV_LIBS})
 
 # copition
 configure_file(${CMAKE_SOURCE_DIR}/examples/example.jpg ${CMAKE_BINARY_DIR}/example.jpg COPYONLY)
